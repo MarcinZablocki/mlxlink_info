@@ -1,0 +1,27 @@
+[package]
+name = "mlxlink_info"
+version = "0.1.1"
+edition = "2021"
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+strip = "debuginfo"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+#dmidecode = "0.8.0"
+gethostname = "0.4.3"
+#serde_json = "1.0"
+#polars = { version = "0.38.3", features = ["json", "serde", "lazy"] }
+#reqwest = { version = "0.12.2", features = ["blocking"] }
+json = "0.12.4"
+natord = "1.0.9"
+tabled = "0.15.0"
+terminal_size = "0.3.0"
+log = "0.4.21"
+clap = { version = "4.5.4", features = ["derive"] }
