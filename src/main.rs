@@ -1,16 +1,18 @@
-#![allow(dead_code)]
 use std::fs;
 use std::process;
+
+use tabled::settings::Height;
+use tabled::settings::object::Segment;
 use tabled::{
-    settings::{peaker::PriorityMax, Height, Settings, Width, Style},
+    settings::{Settings, Width, Style},
     Table, Tabled
 };
 use clap::Parser;
-//use log::{info, warn, debug, error};
 use terminal_size::{terminal_size, Height as TerminalHeight, Width as TerminalWidth};
 use natord::compare;
 use std::sync::mpsc;
 use std::thread;
+use serde_json;
 
 use gethostname::gethostname;
 
@@ -20,6 +22,11 @@ struct Args {
     /// Display errors only
     #[arg(short, long, default_value_t = false)]
     errors: bool,
+    // Output format 
+    // (table, csv, json)
+    //#[arg(short, long, default_value = "table")]
+    #[arg(short, long, value_parser, verbatim_doc_comment)]
+    output_format: String,
 }
 
 fn get_terminal_size() -> (usize, usize) {
@@ -30,6 +37,7 @@ fn get_terminal_size() -> (usize, usize) {
 }
 
 fn parse_result(device : Mlx5Port, _data: json::JsonValue, host_serial: String, host_name: String) -> Mlx5PortStats {
+
     let mut _mlx5_port_stats = Mlx5PortStats {
         raw_physical_errors_per_lane_0: _data["Physical Counters and BER Info"]["Raw Physical Errors Per Lane"]["values"][0].to_string().parse::<u64>().unwrap(),
         raw_physical_errors_per_lane_1: _data["Physical Counters and BER Info"]["Raw Physical Errors Per Lane"]["values"][1].to_string().parse::<u64>().unwrap(),
@@ -57,9 +65,10 @@ fn parse_result(device : Mlx5Port, _data: json::JsonValue, host_serial: String, 
         fec_bin_13: _data["Histogram of FEC Errors"]["Bin 13"]["values"][1].to_string().parse::<u64>().unwrap(),
         fec_bin_14: _data["Histogram of FEC Errors"]["Bin 14"]["values"][1].to_string().parse::<u64>().unwrap(),
         fec_bin_15: _data["Histogram of FEC Errors"]["Bin 15"]["values"][1].to_string().parse::<u64>().unwrap(),
-        device: device,
+        device: device.device,
+        port: device.port,
         comments: "".to_string(),
-        host_serial: host_serial,
+        host_serial,
         hostname: host_name,
         error: false,
 };
@@ -71,7 +80,7 @@ fn parse_result(device : Mlx5Port, _data: json::JsonValue, host_serial: String, 
         _mlx5_port_stats.comments = "Link is down".to_string();
     }
 
-    if _mlx5_port_stats.effective_physical_ber.parse::<f64>().unwrap() > 0.0000000010 {
+    if _mlx5_port_stats.raw_physical_ber.parse::<f64>().unwrap() > 0.0000000010 {
         _mlx5_port_stats.comments = "❌ Physical BER is high".to_string();
     }
 
@@ -79,24 +88,35 @@ fn parse_result(device : Mlx5Port, _data: json::JsonValue, host_serial: String, 
         _mlx5_port_stats.comments = "❌ Physical errors detected".to_string();
     }
 
+    if _mlx5_port_stats.fec_bin_7 > 0 {
+        _mlx5_port_stats.comments = "❌ FEC[7] errors detected".to_string();
+    }
+
+    if _mlx5_port_stats.fec_bin_8 > 0 {
+        _mlx5_port_stats.comments = "❌ FEC[8] errors detected".to_string();
+    }
+
+        if _mlx5_port_stats.fec_bin_9 > 0 {
+        _mlx5_port_stats.comments = "❌ FEC[9] errors detected".to_string();
+    }
+
     return _mlx5_port_stats;
 }
 
 
-#[derive(Tabled)]
-#[derive(Clone)]
+#[derive(Tabled, Clone, serde::Serialize)]
 struct Mlx5Port {
     device: String,
     port: String,
 }
 
-#[derive(Tabled)]
-#[derive(Clone)]
+#[derive(Tabled, Clone, serde::Serialize)]
 struct Mlx5PortStats {
     host_serial: String,
     hostname: String,
     #[tabled(inline)]
-    device: Mlx5Port,
+    port: String, 
+    device: String,
     #[tabled(rename = "bin0")]
     fec_bin_0: u64,
     #[tabled(rename = "bin1")]
@@ -176,22 +196,62 @@ fn collect_mlxlink_output(device : &Mlx5Port) -> json::JsonValue {
     return _data;
 }
 
-fn print_table(all_port_stats: Vec<Mlx5PortStats>) {
+fn process_rows(all_port_stats: Vec<Mlx5PortStats>, args: Args) -> Vec<Mlx5PortStats>{
+    let _error = args.errors;
     let mut all_port_stats = all_port_stats;
-    let (width, height) = get_terminal_size();
-    all_port_stats.sort_by(|a, b| compare(&a.device.port, &b.device.port));
-    let table_settings = Settings::default()
-    .with(Width::wrap(width).priority::<PriorityMax>())
-    .with(Width::truncate(width))
-    .with(Style::modern_rounded());
+    all_port_stats.sort_by(|a, b| compare(&a.port, &b.port));
 
-    //    .with(Height::limit(height))
-
-
-    let mut table = Table::new(all_port_stats);
-    table.with(table_settings);
+    let mut r = Vec::new();
     
-    println!("{}", table);
+    
+    for _mlx5_port_stats in all_port_stats {
+        if _mlx5_port_stats.error == _error {
+            r.push(_mlx5_port_stats);
+        } 
+    }
+
+    return r;
+}
+
+fn print_output(all_port_stats: Vec<Mlx5PortStats>, args: Args) {
+    let _error = args.errors;
+    
+    
+    if args.output_format == "table"{ 
+        let (width, _) = get_terminal_size();
+        let table_settings = Settings::default()
+        .with(Width::truncate(width))
+        .with(Style::modern_rounded());
+        let r = process_rows(all_port_stats, args);
+        if r.len() == 0 {
+            //println!("No errors found.");
+            std::process::exit(0);
+        }
+    
+        let mut table = Table::new(&r);
+        table.modify(Segment::all(), Height::limit(1 ));
+        table.with(table_settings);
+        println!("{}", table);
+    
+    }
+    else if args.output_format == "csv" { 
+        let r = process_rows(all_port_stats, args);
+        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        for _mlx5_port_stats in r {
+            wtr.serialize(_mlx5_port_stats).unwrap();
+        }
+        wtr.flush().unwrap();
+    
+    }
+
+    else if args.output_format == "json" {
+        let r = process_rows(all_port_stats, args);
+        let json_data = serde_json::to_string(&r);
+        println!("{}", json_data.unwrap());
+        
+    }
+
+
 }
 
 fn get_mlx5_ports() -> Vec<Mlx5Port> {
@@ -239,11 +299,11 @@ fn main() {
     let _rdma_ports_list = get_mlx5_ports();
     let rdma_ports_list = _rdma_ports_list.clone();
     let mut _chassis_serial = fs::read_to_string("/sys/class/dmi/id/chassis_serial").unwrap();
+    _chassis_serial = _chassis_serial.trim().to_string();
     let mut _hostname = gethostname().to_string_lossy().to_string();
 
     let mut all_port_stats = Vec::<Mlx5PortStats>::new();
 
-    // For mlx5 device in _rdma_ports_list use threads to collect data
     let (tx, rx) = mpsc::channel();
     for _mlx5_device in _rdma_ports_list {
         let tx = tx.clone();
@@ -262,14 +322,5 @@ fn main() {
         all_port_stats.push(_mlx5_port_stats);
     }
 
-
-    // for _mlx5_device in _rdma_ports_list {
-    //     let _output = collect_mlxlink_output(&_mlx5_device);
-    //     let mut _mlx5_port_stats = parse_result(_mlx5_device, _output, _chassis_serial.clone(), _hostname.clone());
-    //     all_port_stats.push(_mlx5_port_stats);
-
-        
-    // }
-
-    print_table(all_port_stats);
+    print_output(all_port_stats, args);
 }
